@@ -37,7 +37,7 @@ import org.springframework.web.context.support.StaticWebApplicationContext
 import org.springframework.web.servlet.DispatcherServlet
 import org.springframework.web.servlet.mvc.HttpRequestHandlerAdapter
 
-class GrailsRemotingGrailsPlugin {
+class RemotingGrailsPlugin {
 
 	def version = '1.2'
 	def grailsVersion = '2.0 > *'
