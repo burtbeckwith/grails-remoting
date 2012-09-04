@@ -33,6 +33,7 @@ In addition, you can easily access remote services via the same set of protocols
 
 	def artefacts = [InterceptorArtefactHandler]
 	def observe = ['services']
+	def loadAfter = ['services']
 	def watchedResources = "file:./grails-app/remoting/*RemotingInterceptor.groovy"
 
 	def license = "APACHE"
