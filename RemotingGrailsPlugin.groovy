@@ -21,7 +21,7 @@ import org.springframework.web.servlet.DispatcherServlet
 
 class RemotingGrailsPlugin {
 
-	def version = '1.2'
+	def version = '1.3'
 	def grailsVersion = '2.0 > *'
 	def author = 'Peter Ledbrook'
 	def authorEmail = 'peter@cacoethes.co.uk'
