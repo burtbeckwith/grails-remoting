@@ -22,6 +22,8 @@ import org.codehaus.groovy.grails.plugins.remoting.InterceptorArtefactHandler
 import org.codehaus.groovy.grails.plugins.remoting.InterceptorArtefactHandler.InterceptorGrailsClass
 import org.codehaus.groovy.grails.plugins.remoting.InterceptorWrapper
 import org.codehaus.groovy.grails.plugins.remoting.RemotingUrlHandlerMapping
+import org.slf4j.Logger
+import org.slf4j.LoggerFactory
 import org.springframework.aop.framework.ProxyFactoryBean
 import org.springframework.aop.target.HotSwappableTargetSource
 import org.springframework.context.ApplicationContext
@@ -59,7 +61,9 @@ of protocols.
 	def license = "APACHE"
 	def developers = [[name: 'Burt Beckwith', email: 'beckwithb@vmware.com']]
 	def issueManagement = [system: 'JIRA', url: 'http://jira.grails.org/browse/GPREMOTING']
-//	def scm = [url: "http://svn.grails-plugins.codehaus.org/browse/grails-plugins/"]
+	def scm = [url: 'https://github.com/burtbeckwith/grails-remoting']
+
+	private final Logger log = LoggerFactory.getLogger('grails.plugin.remoting.RemotingGrailsPlugin')
 
 	private static final Map remoteExporters = [
 		rmi:         RmiServiceExporter,
@@ -104,60 +108,63 @@ of protocols.
 
 	def doWithSpring = {
 
+		configureInterceptor.delegate = delegate
+		configureNewService.delegate = delegate
+		configureProxy.delegate = delegate
+		exposeProtocol.delegate = delegate
+
 		def interceptorMap = [:]
 
-		if (application.remotingInterceptorClasses) {
-			for (InterceptorGrailsClass interceptorClass in application.remotingInterceptorClasses) {
-				log.info "Registering remoting interceptor: $interceptorClass.fullName"
+		for (InterceptorGrailsClass interceptorClass in application.remotingInterceptorClasses) {
+			log.info "Registering remoting interceptor: $interceptorClass.fullName"
 
-				// What next? Get the pointcut patterns from the interceptor, split each one into class
-				// and method patterns, convert the  patterns to regular expressions, and add to map of
-				// class patterns -> interceptors.
+			// What next? Get the pointcut patterns from the interceptor, split each one into class
+			// and method patterns, convert the  patterns to regular expressions, and add to map of
+			// class patterns -> interceptors.
 
-				// Register the user-defined interceptor.
-				"$interceptorClass.propertyName"(interceptorClass.clazz)
+			// Register the user-defined interceptor.
+			"$interceptorClass.propertyName"(interceptorClass.clazz)
 
-				// Find out which classes/methods the interceptor applies to
-				for (String pointcut in GrailsClassUtils.getStaticPropertyValue(interceptorClass.clazz, 'pointcuts')) {
-					int pos = pointcut.lastIndexOf('.')
-					if (pos < 1) {
-						log.error "Invalid pointcut expression: $pointcut"
-						continue
-					}
-
-					String classPattern = pointcut.substring(0, pos)
-					String methodPattern = pointcut.substring(pos + 1)
-
-					// Configure an interceptor bean that can be used on proxies
-					configureInterceptor.delegate = delegate
-					String beanName = configureInterceptor(methodPattern, interceptorClass.propertyName)
-
-					// Save the bean name for the interceptor against the class pattern
-					def interceptorBeans = interceptorMap[classPattern]
-					if (!interceptorBeans) {
-						interceptorBeans = []
-						interceptorMap[classPattern] = interceptorBeans
-					}
-
-					interceptorBeans << beanName + 'Proxy'
+			// Find out which classes/methods the interceptor applies to
+			for (String pointcut in GrailsClassUtils.getStaticPropertyValue(interceptorClass.clazz, 'pointcuts')) {
+				int pos = pointcut.lastIndexOf('.')
+				if (pos < 1) {
+					log.error "Invalid pointcut expression: $pointcut"
+					continue
 				}
+
+				String classPattern = pointcut[0..pos-1]
+				String methodPattern = pointcut[pos+1..-1]
+
+				// Configure an interceptor bean that can be used on proxies
+				String beanName = configureInterceptor(methodPattern, interceptorClass.propertyName)
+
+				// Save the bean name for the interceptor against the class pattern
+				def interceptorBeans = interceptorMap[classPattern]
+				if (!interceptorBeans) {
+					interceptorBeans = []
+					interceptorMap[classPattern] = interceptorBeans
+				}
+
+				interceptorBeans << beanName + 'Proxy'
 			}
 		}
 
-		if (application.serviceClasses) {
-			// Iterate through each of the declared services and configure them for remoting
-			configureNewService.delegate = delegate
-			for (serviceWrapper in application.serviceClasses) {
-				configureNewService serviceWrapper, interceptorMap
-			}
+		if (!application.serviceClasses) {
+			return
+		}
 
-			// Required for the HTTP based remoting protocols.
-			httpRequestHandlerAdapter(HttpRequestHandlerAdapter)
+		// Iterate through each of the declared services and configure them for remoting
+		for (serviceWrapper in application.serviceClasses) {
+			configureNewService serviceWrapper, interceptorMap
+		}
 
-			// Finally add the custom HandlerMapping.
-			remotingUrlHandlerMapping(RemotingUrlHandlerMapping) {
-				invokerTypes = new HashSet(remoteExporters.keySet())
-			}
+		// Required for the HTTP based remoting protocols.
+		httpRequestHandlerAdapter(HttpRequestHandlerAdapter)
+
+		// Finally add the custom HandlerMapping.
+		remotingUrlHandlerMapping(RemotingUrlHandlerMapping) {
+			invokerTypes = new HashSet(remoteExporters.keySet())
 		}
 	}
 
@@ -167,43 +174,40 @@ of protocols.
 	 * @param serviceWrapper The GrailsClass instance for the new service
 	 */
 	private configureNewService = { GrailsServiceClass serviceWrapper, Map interceptorMap ->
-		log.debug "Configuring new service: $serviceWrapper.shortName"
-
-		// If this service has a static 'remote' property, then it is acting as a proxy for a remote service
 		Class serviceClass = serviceWrapper.clazz
 		String exposedName = serviceWrapper.shortName
+
+		// If this service has a static 'remote' property, then it is acting as a proxy for a remote service
 		def remoteDef = GrailsClassUtils.getStaticPropertyValue(serviceClass, 'remote')
 		if (remoteDef) {
 			// Create a proxy for the configured remote service.
 			configureClientProxy log, delegate, remoteDef, serviceWrapper.propertyName, exposedName
+			return
 		}
-		else {
-			// OK, the service isn't configured as a proxy to a remote service, so check whether it
-			// should be exposed as a remote exporter by looking for a static 'expose' property.
-			def exposeList = GrailsClassUtils.getStaticPropertyValue(serviceClass, 'expose')
-			if (!exposeList) {
-				// This service has not been configured for remoting
-				return
-			}
 
-			// Check that the service has an interface to expose.
-			if (serviceClass.interfaces.size() == 0 || serviceClass.interfaces[0] == GroovyObject) {
-				log.error "Cannot expose service '$exposedName' via remoting: service does not implement any interfaces."
-				return
-			}
+		// OK, the service isn't configured as a proxy to a remote service, so check whether it
+		// should be exposed as a remote exporter by looking for a static 'expose' property.
+		def exposeList = GrailsClassUtils.getStaticPropertyValue(serviceClass, 'expose')
+		if (!exposeList) {
+			// This service has not been configured for remoting
+			return
+		}
 
-			// Set up Spring invokers for each type specified in the 'expose' list
-			Class exposedInterface = serviceClass.interfaces[0]
-			if (exposeList) {
-				// Create a proxy to the service so that we can hot-swap changes in
-				configureProxy.delegate = delegate
-				configureProxy serviceWrapper, exposedInterface, interceptorMap
-			}
+		// Check that the service has an interface to expose.
+		if (serviceClass.interfaces.size() == 0 || serviceClass.interfaces[0] == GroovyObject) {
+			log.error "Cannot expose service '$exposedName' via remoting: service does not implement any interfaces."
+			return
+		}
 
-			exposeProtocol.delegate = delegate
-			for (type in exposeList) {
-				exposeProtocol type, exposedName, exposedInterface
-			}
+		// Set up Spring invokers for each type specified in the 'expose' list
+		Class exposedInterface = serviceClass.interfaces[0]
+		if (exposeList) {
+			// Create a proxy to the service so that we can hot-swap changes in
+			configureProxy serviceWrapper, exposedInterface, interceptorMap
+		}
+
+		for (type in exposeList) {
+			exposeProtocol type, exposedName, exposedInterface
 		}
 	}
 
@@ -243,7 +247,7 @@ of protocols.
 	 * @param exposedName The name of the service - this is used to reference the appropriate proxy bean.
 	 * @param iface The interface (instance of Class) that the service exposes to remote clients
 	 */
-	private exposeProtocol = { protocol, exposedName, iface ->
+	private exposeProtocol = { String protocol, String exposedName, Class iface ->
 		if (!remoteExporters.containsKey(protocol)) {
 			log.info "Unrecognised invoker protocol: $protocol - ignoring for this service ('$exposedName')."
 			return
@@ -272,7 +276,7 @@ of protocols.
 	}
 
 	// Create a remote proxy for the service, using the config provided by the 'remote' property
-	private configureClientProxy(log, bb, config, beanName, exposedName) {
+	private void configureClientProxy(log, bb, config, String beanName, String exposedName) {
 		if (!(config instanceof Map)) {
 			log.error "Invalid value for 'remote' property in service '$exposedName' - must be a map."
 			return
@@ -296,7 +300,7 @@ of protocols.
 			switch (protocol) {
 				case 'rmi':
 					int port = config.port ?: 1199
-					config.url = "rmi://$host:$port/$exposedName".toString()
+					config.url = "rmi://$host:$port/$exposedName"
 					break
 
 				case 'httpinvoker':
@@ -306,7 +310,7 @@ of protocols.
 					String context = config.webcontext
 					if (context) context += '/'
 
-					config.url = "http://$host:$port/$context$protocol/$exposedName".toString()
+					config.url = "http://$host:$port/$context$protocol/$exposedName"
 					break
 			}
 		}
@@ -315,9 +319,11 @@ of protocols.
 		log.info "Creating proxy for '$beanName'"
 		bb."$beanName"(proxyFactories[protocol]) { bean ->
 			bean.autowire = 'byName'
-			bb.serviceUrl = config.url
+			bb.serviceUrl = config.url.toString()
 			bb.serviceInterface = config.iface
 		}
+
+		log.debug "Created proxy client for interface $config.iface.name with URL $config.url"
 	}
 
 	private configureInterceptor = { String methodPattern, String interceptorName ->
