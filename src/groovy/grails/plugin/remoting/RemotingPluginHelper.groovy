@@ -142,6 +142,13 @@ class RemotingPluginHelper {
 			// This service has not been configured for remoting
 			return
 		}
+		
+		def exposed = false
+		exposeList.each { 
+			// Check that the service has valid type
+			if ( proxyFactories[it] !=null )exposed =true
+		}
+		if ( !exposed ) return
 
 		// Check that the service has an interface to expose.
 		if (serviceClass.interfaces.size() == 0 || serviceClass.interfaces[0] == GroovyObject) {
